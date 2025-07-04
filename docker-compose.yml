@@ -1,0 +1,185 @@
+# When updating, run the following commands:
+# docker compose down -v
+# docker compose up --build -d
+# docker compose up -d
+
+# The API gateway is running on the port
+# localhost:8000
+
+services:
+  kong:
+    image: kong:3.0
+    container_name: kong
+    environment:
+      KONG_DATABASE: off
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    ports:
+      - "8000:8000"  # API Gateway port
+      - "8001:8001"  # Admin API
+    volumes:
+      - ./kong.yml:/etc/kong/kong.yml
+      - ./.env:/etc/kong/.env
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    depends_on:
+      - flight-service
+      - user-service
+      - airport-service
+      - booking-service
+      - email-service
+    networks:
+      - app-network
+
+  flight-service:
+    image: flight-service:latest
+    env_file:
+      - ./flight-service/.env
+    ports:
+      - "8080:8080"
+    networks:
+      - app-network
+
+  user-service:
+    image: user-service:latest
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    env_file:
+      - ./user-service/.env
+    ports:
+      - "8081:8081"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  airport-service:
+    image: airport-service:latest
+    env_file:
+      - ./airport-service/.env
+    ports:
+      - "8082:8082"  # Expose port to Prometheus
+    networks:
+      - app-network
+
+  booking-service:
+    image: booking-service:latest
+    environment:
+      ENV: production
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    env_file:
+      - ./booking-service/.env.prod
+    ports:
+      - "8083:8083"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  payment-service:
+    image: payment-service:latest
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    env_file:
+      - ./payment-service/.env
+    ports:
+      - "8084:8084"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  email-service:
+    image: email-service:latest
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    env_file:
+      - ./email-service/.env
+    ports:
+      - "8085:8085"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  rabbitmq:
+    image: rabbitmq:4.0-management
+    container_name: rabbitmq
+    ports:
+      - "15672:15672"  # Management UI only
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - app-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - app-network
+
+  loki:
+    image: grafana/loki:2.8.2
+    container_name: loki
+    user: "0:0"  # Run as root to avoid permission issues
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/tmp/loki
+    networks:
+      - app-network
+
+  promtail:
+    image: grafana/promtail:2.8.2
+    container_name: promtail
+    volumes:
+      - ./promtail-config.yaml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log:/var/log:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  loki_data:
